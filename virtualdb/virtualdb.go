@@ -2,11 +2,12 @@ package virtualdb
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/pingcap/parser"
 	"github.com/pingcap/parser/ast"
 	"github.com/pingcap/parser/model"
 	_ "github.com/pingcap/tidb/types/parser_driver"
-	"strings"
 )
 
 type TableInfo struct {
@@ -27,8 +28,14 @@ type VirtualDB struct {
 func NewVirtualDB(defaultSchema string) *VirtualDB {
 	return &VirtualDB{
 		currentSchema: defaultSchema,
-		schemas:       map[string]*SchemaInfo{},
+		schemas: map[string]*SchemaInfo{defaultSchema: {
+			Schema: &ast.CreateDatabaseStmt{
+				Name: defaultSchema,
+			},
+			Tables: map[string]*TableInfo{},
+		}},
 	}
+
 }
 
 func (c *VirtualDB) useSchema(schema string) error {
@@ -499,6 +506,22 @@ func (c *VirtualDB) GetColumn(schemaName, tableName, columnName string) (*ast.Co
 	for _, col := range table.Table.Cols {
 		if col.Name.String() == columnName {
 			return col, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func (c *VirtualDB) GetConstraints(schemaName, tableName, constraintName string) (*ast.Constraint, bool, error) {
+	table, exist, err := c.getTable(schemaName, tableName)
+	if err != nil {
+		return nil, false, err
+	}
+	if !exist {
+		return nil, false, fmt.Errorf(NotExistTableErrorPattern, schemaName, tableName)
+	}
+	for _, con := range table.Table.Constraints {
+		if con.Name == constraintName {
+			return con, true, nil
 		}
 	}
 	return nil, false, nil
