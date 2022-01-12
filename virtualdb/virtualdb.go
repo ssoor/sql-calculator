@@ -142,6 +142,7 @@ func (c *VirtualDB) addTable(info *TableInfo) error {
 
 func (c *VirtualDB) dropTables(stmt *ast.DropTableStmt) error {
 	errs := []string{}
+	tables := []*ast.TableName{}
 	for _, table := range stmt.Tables {
 		schemaName := c.getSchemaName(table)
 		tableName := table.Name.String()
@@ -151,16 +152,23 @@ func (c *VirtualDB) dropTables(stmt *ast.DropTableStmt) error {
 			continue
 		}
 		if !exist {
+			if stmt.IfExists {
+				continue
+			}
+
 			schemaName := c.getSchemaName(table)
 			tableName := table.Name.String()
 			msg := fmt.Sprintf(NotExistTableErrorPattern, schemaName, tableName)
 			errs = append(errs, msg)
+			continue
 		}
+
+		tables = append(tables, table)
 	}
 	if len(errs) != 0 {
 		return fmt.Errorf(strings.Join(errs, ","))
 	}
-	for _, table := range stmt.Tables {
+	for _, table := range tables {
 		schemaName := c.getSchemaName(table)
 		tableName := table.Name.String()
 		err := c.delTable(schemaName, tableName)
