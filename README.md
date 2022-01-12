@@ -35,6 +35,22 @@ SOAR(https://github.com/XiaoMi/soar/blob/dev/cmd/soar/soar.go) 使用的是 perc
 * 表：增，删
 * 字段： 增，删，改
  
+### 2. 使用方式
+```bash
+>> ./sql-calculator diff --help
+SQL Diff - Compare the differences between the two SQL content and output the synchronization script
+
+Usage:
+   diff [Source SQL filename](string) [Target SQL filename](string) [flags]
+
+Examples:
+   ./sql-calculator diff ./source.sql ./target.sql
+Output:
+   ALTER TABLE `qk_t2` COMMENT = '注释被修改'
+
+Flags:
+  -h, --help   help for diff
+```
 ## virtual db
 模拟数据库的 ddl 执行得到数据库结构
 ```go

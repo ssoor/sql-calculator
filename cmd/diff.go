@@ -15,7 +15,7 @@ var DiffCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(2),
 	Short: "SQL Diff",
 	Example: "   ./sql-calculator diff ./source.sql ./target.sql\n" +
-		"Output:\n   ALTER TABLE `db1`.`qk_t2` COMMENT = '注释被修改'",
+		"Output:\n   ALTER TABLE `qk_t2` COMMENT = '注释被修改'",
 	Long: "SQL Diff - Compare the differences between the two SQL content and output the synchronization script",
 	Run: func(cmd *cobra.Command, args []string) {
 		sourceSql, err := ioutil.ReadFile(args[0])
