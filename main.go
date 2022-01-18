@@ -1,7 +1,7 @@
 package main
 
 import (
-	"sql-calculator/cmd"
+	"github.com/ssoor/sql-calculator/cmd"
 
 	"github.com/spf13/cobra"
 )

@@ -2,8 +2,9 @@ package diff
 
 import (
 	"fmt"
-	"sql-calculator/utils"
 	"testing"
+
+	"github.com/ssoor/sql-calculator/utils"
 )
 
 func TestGetDiffFromSqlFile(t *testing.T) {

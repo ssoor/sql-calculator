@@ -2,9 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/spf13/cobra"
 	"os"
-	"sql-calculator/utils"
+
+	"github.com/spf13/cobra"
+	"github.com/ssoor/sql-calculator/utils"
 )
 
 var sql *string

@@ -1,4 +1,4 @@
-module sql-calculator
+module github.com/ssoor/sql-calculator
 
 go 1.14
 

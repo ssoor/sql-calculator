@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"sql-calculator/diff"
-	"sql-calculator/utils"
+
+	"github.com/ssoor/sql-calculator/diff"
+	"github.com/ssoor/sql-calculator/utils"
 
 	"github.com/spf13/cobra"
 )

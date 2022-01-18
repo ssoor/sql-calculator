@@ -1,8 +1,8 @@
 package diff
 
 import (
-	"sql-calculator/utils"
-	"sql-calculator/virtualdb"
+	"github.com/ssoor/sql-calculator/utils"
+	"github.com/ssoor/sql-calculator/virtualdb"
 
 	"github.com/pingcap/parser/ast"
 	_ "github.com/pingcap/tidb/types/parser_driver"
