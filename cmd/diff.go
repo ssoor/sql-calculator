@@ -21,18 +21,18 @@ var DiffCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		sourceSql, err := ioutil.ReadFile(args[0])
 		if err != nil {
-			fmt.Println(err)
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		targetSql, err := ioutil.ReadFile(args[1])
 		if err != nil {
-			fmt.Println(err)
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 
 		alters, err := diff.GetDiffFromSqlFile("", string(sourceSql), string(targetSql))
 		if err != nil {
-			fmt.Println(err)
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 

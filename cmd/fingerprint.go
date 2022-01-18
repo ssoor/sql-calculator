@@ -19,7 +19,7 @@ var FingerprintCmd = &cobra.Command{
 	Long: "SQL Fingerprint - Replace all expression value of the SQL with ?",
 	Run: func(cmd *cobra.Command, args []string) {
 		if q, err := utils.Fingerprint(args[0]); err != nil {
-			fmt.Println(err)
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		} else {
 			fmt.Println(q)

@@ -9,6 +9,7 @@ import (
 func main() {
 	var rootCmd = &cobra.Command{}
 	rootCmd.AddCommand(cmd.DiffCmd)
+	rootCmd.AddCommand(cmd.DumpCmd)
 	rootCmd.AddCommand(cmd.FingerprintCmd)
 	rootCmd.Execute()
 }
