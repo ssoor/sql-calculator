@@ -1,115 +1,12 @@
 package diff
 
 import (
-	"fmt"
-
 	"github.com/ssoor/sql-calculator/utils"
 	"github.com/ssoor/sql-calculator/virtualdb"
 
 	"github.com/pingcap/parser/ast"
 	_ "github.com/pingcap/tidb/types/parser_driver"
 )
-
-type DiffIgnoreType int
-
-// DiffIgnore types.
-const (
-	TableOptionNone DiffIgnoreType = iota
-	DiffIgnoreTableRemove
-	DiffIgnoreTableAppend
-	DiffIgnoreTableOptionEngine
-	DiffIgnoreTableOptionCharset
-	DiffIgnoreTableOptionRowFormat
-	DiffIgnoreTableOptionAutoIncrement
-	DiffIgnoreColumnRemove
-	DiffIgnoreColumnAppend
-	DiffIgnoreColumnOptionNull
-	DiffIgnoreColumnOptionComment
-	DiffIgnoreIndexOption
-)
-
-func (m DiffIgnoreType) GetTableOption() ast.TableOptionType {
-	switch m {
-	case DiffIgnoreTableOptionEngine:
-		return ast.TableOptionEngine
-	case DiffIgnoreTableOptionCharset:
-		return ast.TableOptionCharset
-	case DiffIgnoreTableOptionRowFormat:
-		return ast.TableOptionRowFormat
-	case DiffIgnoreTableOptionAutoIncrement:
-		return ast.TableOptionAutoIncrement
-	}
-
-	return ast.TableOptionNone
-}
-
-func (m DiffOption) HasIgnoreTableOption(tp ast.TableOptionType) bool {
-	for _, opt := range m.IgnoreOpts {
-		if tp == opt.GetTableOption() {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (m DiffOption) HasIgnoreColumnName(name string) bool {
-	for _, ignoreName := range m.IgnoreColumns {
-		if name == ignoreName {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (m DiffOption) HasIgnoreColumnOption(tp ast.ColumnOptionType) bool {
-	for _, opt := range m.IgnoreOpts {
-		if tp == opt.GetColumnOption() {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (m DiffIgnoreType) GetColumnOption() ast.ColumnOptionType {
-	switch m {
-	case DiffIgnoreColumnOptionNull:
-		return ast.ColumnOptionNull
-	case DiffIgnoreColumnOptionComment:
-		return ast.ColumnOptionComment
-	}
-
-	return ast.ColumnOptionNoOption
-}
-
-// TableOption is used for parsing table option from SQL.
-type DiffOption struct {
-	IgnoreOpts    []DiffIgnoreType
-	IgnoreColumns []string
-}
-
-func (m DiffOption) Has(ty DiffIgnoreType) bool {
-	hit := false
-	for _, ignoreOpt := range m.IgnoreOpts {
-		if ty == ignoreOpt {
-			hit = true
-			break
-		}
-	}
-
-	return hit
-}
-
-var DefaultDiffIgnoreTypes = []DiffIgnoreType{
-	DiffIgnoreTableOptionEngine,
-	DiffIgnoreTableOptionCharset,
-	DiffIgnoreTableOptionRowFormat,
-	DiffIgnoreTableOptionAutoIncrement,
-	DiffIgnoreIndexOption,
-	DiffIgnoreColumnOptionNull,
-}
 
 func GetDiffFromSqlFile(dbName, sourceSqlFile, targetSqlFile string, ignores ...DiffIgnoreType) ([]ast.StmtNode, error) {
 	ignores = append(ignores, DefaultDiffIgnoreTypes...)
@@ -142,7 +39,9 @@ func GetDiffSQLWithOpt(dbName, sourceSqlFile, targetSqlFile string, opt DiffOpti
 			}
 		} else {
 			delete(targetTables, name) // 存在，从目标中删除并处理差异
-			alter = GetDiffTable(sourceTable.Table, targetTable.Table, opt)
+			if !opt.Has(DiffIgnoreTableDiff) {
+				alter = GetDiffTable(sourceTable.Table, targetTable.Table, opt)
+			}
 		}
 
 		if alter == nil {
@@ -191,19 +90,24 @@ func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption)
 		if compareColumn(col, sourceCol, opt) {
 			continue
 		}
-		alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
-			Tp:         ast.AlterTableModifyColumn,
-			NewColumns: []*ast.ColumnDef{col},
-			Position: &ast.ColumnPosition{
-				Tp: ast.ColumnPositionNone,
-			},
-		})
+
+		if !opt.Has(DiffIgnoreColumnDiff) {
+			// fmt.Printf("DIFF: %s.%s\n", sourceTable.Table.Name.String(), col.Name.Name.String())
+
+			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
+				Tp:         ast.AlterTableModifyColumn,
+				NewColumns: []*ast.ColumnDef{col},
+				Position: &ast.ColumnPosition{
+					Tp: ast.ColumnPositionNone,
+				},
+			})
+		}
 	}
 
 	if !opt.Has(DiffIgnoreColumnRemove) {
 		// 目标中不存在，需要删除
 		for _, col := range removeColumns {
-			fmt.Printf("%s\t%s\n", sourceTable.Table.Name.String(), col.Name.Name.String())
+			// fmt.Printf("DEL: %s.%s\n", sourceTable.Table.Name.String(), col.Name.Name.String())
 
 			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
 				Tp:            ast.AlterTableDropColumn,
@@ -216,6 +120,8 @@ func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption)
 		// 创建剩余的字段
 		cols := []*ast.ColumnDef{}
 		for _, col := range columnMap {
+			// fmt.Printf("ADD: %s.%s\n", sourceTable.Table.Name.String(), col.Name.Name.String())
+
 			cols = append(cols, col)
 		}
 
@@ -234,11 +140,14 @@ func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption)
 
 	for _, sourceCon := range sourceTable.Constraints {
 		con, exist := constraintMap[sourceCon.Name]
-		if !exist { // 目标中不存在，需要删除
-			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
-				Tp:   ast.AlterTableDropIndex,
-				Name: sourceCon.Name,
-			})
+		if !exist {
+			// 目标中不存在，需要删除
+			if !opt.Has(DiffIgnoreIndexRemove) {
+				alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
+					Tp:   ast.AlterTableDropIndex,
+					Name: sourceCon.Name,
+				})
+			}
 			continue
 		}
 		delete(constraintMap, sourceCon.Name) // 存在，从目标中删除并处理差异
@@ -262,16 +171,20 @@ func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption)
 				Tp: ast.AlterTableDropPrimaryKey,
 			}
 		}
-		alterSpecs = append(alterSpecs, delDDL)
-		alterSpecs = append(alterSpecs, addDDL)
+		if !opt.Has(DiffIgnoreIndexDiff) {
+			alterSpecs = append(alterSpecs, delDDL)
+			alterSpecs = append(alterSpecs, addDDL)
+		}
 	}
 
 	// 创建剩余的约束
-	for _, con := range constraintMap {
-		alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
-			Tp:         ast.AlterTableAddConstraint,
-			Constraint: con,
-		})
+	if !opt.Has(DiffIgnoreIndexAppend) {
+		for _, con := range constraintMap {
+			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
+				Tp:         ast.AlterTableAddConstraint,
+				Constraint: con,
+			})
+		}
 	}
 
 	if !compareTableOptions(targetTable, sourceTable, opt) {
