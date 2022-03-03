@@ -66,26 +66,27 @@ func GetDiffSQLWithOpt(dbName, sourceSqlFile, targetSqlFile string, opt DiffOpti
 func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption) ast.StmtNode {
 	columnMap := make(map[string]*ast.ColumnDef)
 	for _, col := range targetTable.Cols {
-		if opt.HasIgnoreColumnName(col.Name.Name.String()) {
-			continue
-		}
-
 		columnMap[col.Name.Name.String()] = col
 	}
 
 	alterSpecs := []*ast.AlterTableSpec{}
 	removeColumns := []*ast.ColumnDef{}
 	for _, sourceCol := range sourceTable.Cols {
-		if opt.HasIgnoreColumnName(sourceCol.Name.Name.String()) {
+		targetName := ""
+		col, exist := columnMap[sourceCol.Name.Name.String()]
+		if exist {
+			targetName = col.Name.Name.String()
+			delete(columnMap, sourceCol.Name.Name.String()) // 存在，从目标中删除并处理差异
+		}
+
+		if !opt.ColumnNameDiff(sourceCol.Name.Name.String(), targetName) {
 			continue
 		}
 
-		col, exist := columnMap[sourceCol.Name.Name.String()]
 		if !exist {
 			removeColumns = append(removeColumns, sourceCol)
 			continue
 		}
-		delete(columnMap, sourceCol.Name.Name.String()) // 存在，从目标中删除并处理差异
 
 		if compareColumn(col, sourceCol, opt) {
 			continue
@@ -120,6 +121,9 @@ func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption)
 		// 创建剩余的字段
 		cols := []*ast.ColumnDef{}
 		for _, col := range columnMap {
+			if !opt.ColumnNameDiff("", col.Name.Name.String()) {
+				continue
+			}
 			// fmt.Printf("ADD: %s.%s\n", sourceTable.Table.Name.String(), col.Name.Name.String())
 
 			cols = append(cols, col)
@@ -138,19 +142,23 @@ func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption)
 		constraintMap[con.Name] = con
 	}
 
+	removeIndexs := []*ast.Constraint{}
 	for _, sourceCon := range sourceTable.Constraints {
+		targetName := ""
 		con, exist := constraintMap[sourceCon.Name]
-		if !exist {
-			// 目标中不存在，需要删除
-			if !opt.Has(DiffIgnoreIndexRemove) {
-				alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
-					Tp:   ast.AlterTableDropIndex,
-					Name: sourceCon.Name,
-				})
-			}
+		if exist {
+			targetName = con.Name
+			delete(constraintMap, sourceCon.Name) // 存在，从目标中删除并处理差异
+		}
+
+		if !opt.IndexNameDiff(sourceCon.Name, targetName) {
 			continue
 		}
-		delete(constraintMap, sourceCon.Name) // 存在，从目标中删除并处理差异
+
+		if !exist {
+			removeIndexs = append(removeIndexs, sourceCon)
+			continue
+		}
 
 		if compareConstraint(sourceCon, con, opt) {
 			continue
@@ -171,15 +179,32 @@ func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption)
 				Tp: ast.AlterTableDropPrimaryKey,
 			}
 		}
+
 		if !opt.Has(DiffIgnoreIndexDiff) {
 			alterSpecs = append(alterSpecs, delDDL)
 			alterSpecs = append(alterSpecs, addDDL)
 		}
 	}
 
+	// 目标中不存在，需要删除
+	if !opt.Has(DiffIgnoreIndexRemove) {
+		for _, con := range removeIndexs {
+			// fmt.Printf("DEL: %s.%s\n", sourceTable.Table.Name.String(), col.Name.Name.String())
+
+			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
+				Tp:   ast.AlterTableDropIndex,
+				Name: con.Name,
+			})
+		}
+	}
+
 	// 创建剩余的约束
 	if !opt.Has(DiffIgnoreIndexAppend) {
 		for _, con := range constraintMap {
+			if !opt.IndexNameDiff("", con.Name) {
+				continue
+			}
+
 			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
 				Tp:         ast.AlterTableAddConstraint,
 				Constraint: con,
