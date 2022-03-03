@@ -1,6 +1,8 @@
 package diff
 
 import (
+	"fmt"
+
 	"github.com/ssoor/sql-calculator/utils"
 	"github.com/ssoor/sql-calculator/virtualdb"
 
@@ -8,7 +10,114 @@ import (
 	_ "github.com/pingcap/tidb/types/parser_driver"
 )
 
-func GetDiffFromSqlFile(dbName, sourceSqlFile, targetSqlFile string) ([]ast.StmtNode, error) {
+type DiffIgnoreType int
+
+// DiffIgnore types.
+const (
+	TableOptionNone DiffIgnoreType = iota
+	DiffIgnoreTableRemove
+	DiffIgnoreTableAppend
+	DiffIgnoreTableOptionEngine
+	DiffIgnoreTableOptionCharset
+	DiffIgnoreTableOptionRowFormat
+	DiffIgnoreTableOptionAutoIncrement
+	DiffIgnoreColumnRemove
+	DiffIgnoreColumnAppend
+	DiffIgnoreColumnOptionNull
+	DiffIgnoreColumnOptionComment
+	DiffIgnoreIndexOption
+)
+
+func (m DiffIgnoreType) GetTableOption() ast.TableOptionType {
+	switch m {
+	case DiffIgnoreTableOptionEngine:
+		return ast.TableOptionEngine
+	case DiffIgnoreTableOptionCharset:
+		return ast.TableOptionCharset
+	case DiffIgnoreTableOptionRowFormat:
+		return ast.TableOptionRowFormat
+	case DiffIgnoreTableOptionAutoIncrement:
+		return ast.TableOptionAutoIncrement
+	}
+
+	return ast.TableOptionNone
+}
+
+func (m DiffOption) HasIgnoreTableOption(tp ast.TableOptionType) bool {
+	for _, opt := range m.IgnoreOpts {
+		if tp == opt.GetTableOption() {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (m DiffOption) HasIgnoreColumnName(name string) bool {
+	for _, ignoreName := range m.IgnoreColumns {
+		if name == ignoreName {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (m DiffOption) HasIgnoreColumnOption(tp ast.ColumnOptionType) bool {
+	for _, opt := range m.IgnoreOpts {
+		if tp == opt.GetColumnOption() {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (m DiffIgnoreType) GetColumnOption() ast.ColumnOptionType {
+	switch m {
+	case DiffIgnoreColumnOptionNull:
+		return ast.ColumnOptionNull
+	case DiffIgnoreColumnOptionComment:
+		return ast.ColumnOptionComment
+	}
+
+	return ast.ColumnOptionNoOption
+}
+
+// TableOption is used for parsing table option from SQL.
+type DiffOption struct {
+	IgnoreOpts    []DiffIgnoreType
+	IgnoreColumns []string
+}
+
+func (m DiffOption) Has(ty DiffIgnoreType) bool {
+	hit := false
+	for _, ignoreOpt := range m.IgnoreOpts {
+		if ty == ignoreOpt {
+			hit = true
+			break
+		}
+	}
+
+	return hit
+}
+
+var DefaultDiffIgnoreTypes = []DiffIgnoreType{
+	DiffIgnoreTableOptionEngine,
+	DiffIgnoreTableOptionCharset,
+	DiffIgnoreTableOptionRowFormat,
+	DiffIgnoreTableOptionAutoIncrement,
+	DiffIgnoreIndexOption,
+	DiffIgnoreColumnOptionNull,
+}
+
+func GetDiffFromSqlFile(dbName, sourceSqlFile, targetSqlFile string, ignores ...DiffIgnoreType) ([]ast.StmtNode, error) {
+	ignores = append(ignores, DefaultDiffIgnoreTypes...)
+
+	return GetDiffSQLWithOpt(dbName, sourceSqlFile, targetSqlFile, DiffOption{IgnoreOpts: ignores})
+}
+
+func GetDiffSQLWithOpt(dbName, sourceSqlFile, targetSqlFile string, opt DiffOption) ([]ast.StmtNode, error) {
 	sourceDb := virtualdb.NewVirtualDB(dbName)
 	if err := sourceDb.ExecSQL(sourceSqlFile); err != nil {
 		return nil, err
@@ -28,11 +137,12 @@ func GetDiffFromSqlFile(dbName, sourceSqlFile, targetSqlFile string) ([]ast.Stmt
 
 		targetTable, exist := targetTables[name]
 		if !exist {
-			// 目标中不存在，需要删除
-			alter = &ast.DropTableStmt{Tables: []*ast.TableName{sourceTable.Table.Table}}
+			if !opt.Has(DiffIgnoreTableRemove) { // 目标中不存在，需要删除
+				alter = &ast.DropTableStmt{Tables: []*ast.TableName{sourceTable.Table.Table}}
+			}
 		} else {
 			delete(targetTables, name) // 存在，从目标中删除并处理差异
-			alter = GetDiffFromTable(sourceTable.Table, targetTable.Table)
+			alter = GetDiffTable(sourceTable.Table, targetTable.Table, opt)
 		}
 
 		if alter == nil {
@@ -40,6 +150,10 @@ func GetDiffFromSqlFile(dbName, sourceSqlFile, targetSqlFile string) ([]ast.Stmt
 		}
 
 		allDDL = append(allDDL, alter)
+	}
+
+	if opt.Has(DiffIgnoreTableAppend) {
+		return allDDL, nil
 	}
 
 	// 创建剩余的表
@@ -50,25 +164,31 @@ func GetDiffFromSqlFile(dbName, sourceSqlFile, targetSqlFile string) ([]ast.Stmt
 	return allDDL, nil
 }
 
-func GetDiffFromTable(sourceTable, targetTable *ast.CreateTableStmt) ast.StmtNode {
+func GetDiffTable(sourceTable, targetTable *ast.CreateTableStmt, opt DiffOption) ast.StmtNode {
 	columnMap := make(map[string]*ast.ColumnDef)
 	for _, col := range targetTable.Cols {
+		if opt.HasIgnoreColumnName(col.Name.Name.String()) {
+			continue
+		}
+
 		columnMap[col.Name.Name.String()] = col
 	}
 
 	alterSpecs := []*ast.AlterTableSpec{}
+	removeColumns := []*ast.ColumnDef{}
 	for _, sourceCol := range sourceTable.Cols {
+		if opt.HasIgnoreColumnName(sourceCol.Name.Name.String()) {
+			continue
+		}
+
 		col, exist := columnMap[sourceCol.Name.Name.String()]
-		if !exist { // 目标中不存在，需要删除
-			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
-				Tp:            ast.AlterTableDropColumn,
-				OldColumnName: sourceCol.Name,
-			})
+		if !exist {
+			removeColumns = append(removeColumns, sourceCol)
 			continue
 		}
 		delete(columnMap, sourceCol.Name.Name.String()) // 存在，从目标中删除并处理差异
 
-		if compareColumn(col, sourceCol) {
+		if compareColumn(col, sourceCol, opt) {
 			continue
 		}
 		alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
@@ -80,12 +200,31 @@ func GetDiffFromTable(sourceTable, targetTable *ast.CreateTableStmt) ast.StmtNod
 		})
 	}
 
-	// 创建剩余的字段
-	for _, col := range columnMap {
-		alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
-			Tp:         ast.AlterTableAddColumns,
-			NewColumns: []*ast.ColumnDef{col},
-		})
+	if !opt.Has(DiffIgnoreColumnRemove) {
+		// 目标中不存在，需要删除
+		for _, col := range removeColumns {
+			fmt.Printf("%s\t%s\n", sourceTable.Table.Name.String(), col.Name.Name.String())
+
+			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
+				Tp:            ast.AlterTableDropColumn,
+				OldColumnName: col.Name,
+			})
+		}
+	}
+
+	if !opt.Has(DiffIgnoreColumnAppend) {
+		// 创建剩余的字段
+		cols := []*ast.ColumnDef{}
+		for _, col := range columnMap {
+			cols = append(cols, col)
+		}
+
+		if len(cols) > 0 {
+			alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
+				Tp:         ast.AlterTableAddColumns,
+				NewColumns: cols,
+			})
+		}
 	}
 
 	constraintMap := make(map[string]*ast.Constraint)
@@ -104,7 +243,7 @@ func GetDiffFromTable(sourceTable, targetTable *ast.CreateTableStmt) ast.StmtNod
 		}
 		delete(constraintMap, sourceCon.Name) // 存在，从目标中删除并处理差异
 
-		if compareConstraint(con, sourceCon) {
+		if compareConstraint(sourceCon, con, opt) {
 			continue
 		}
 
@@ -135,7 +274,7 @@ func GetDiffFromTable(sourceTable, targetTable *ast.CreateTableStmt) ast.StmtNod
 		})
 	}
 
-	if !compareTableOptions(targetTable, sourceTable) {
+	if !compareTableOptions(targetTable, sourceTable, opt) {
 		alterSpecs = append(alterSpecs, &ast.AlterTableSpec{
 			Tp:      ast.AlterTableOption,
 			Options: targetTable.Options,
@@ -152,66 +291,74 @@ func GetDiffFromTable(sourceTable, targetTable *ast.CreateTableStmt) ast.StmtNod
 	}
 }
 
-func compareTableOptions(source, target *ast.CreateTableStmt) bool {
-	sourceOpts := []*ast.TableOption{}
-	for _, opt := range source.Options {
-		switch opt.Tp {
-		case ast.TableOptionEngine:
-		case ast.TableOptionCharset:
-		case ast.TableOptionRowFormat:
-		case ast.TableOptionAutoIncrement:
-		default:
-			sourceOpts = append(sourceOpts, opt)
+func compareTableOptions(source, target *ast.CreateTableStmt, opt DiffOption) bool {
+	rawOpts := [][]*ast.TableOption{
+		source.Options,
+		target.Options,
+	}
+
+	restoreOpts := make([][]*ast.TableOption, len(rawOpts))
+	for i, opts := range rawOpts {
+		for _, tableOpt := range opts {
+			if opt.HasIgnoreTableOption(tableOpt.Tp) {
+				continue
+			}
+
+			restoreOpts[i] = append(restoreOpts[i], tableOpt)
 		}
 	}
 
-	targetOpts := []*ast.TableOption{}
-	for _, opt := range target.Options {
-		switch opt.Tp {
-		case ast.TableOptionEngine:
-		case ast.TableOptionCharset:
-		case ast.TableOptionRowFormat:
-		case ast.TableOptionAutoIncrement:
-		default:
-			targetOpts = append(targetOpts, opt)
-		}
-	}
-	s, _ := utils.RestoreToSql(&ast.CreateTableStmt{Table: source.Table, Options: sourceOpts})
-	t, _ := utils.RestoreToSql(&ast.CreateTableStmt{Table: target.Table, Options: targetOpts})
+	s, _ := utils.RestoreToSql(&ast.CreateTableStmt{Table: source.Table, Options: restoreOpts[0]})
+	t, _ := utils.RestoreToSql(&ast.CreateTableStmt{Table: target.Table, Options: restoreOpts[1]})
 
 	return s == t
 }
 
-func compareColumn(source, target *ast.ColumnDef) bool {
-	opts := []*ast.ColumnOption{}
-	for _, opt := range source.Options {
-		if opt.Tp == ast.ColumnOptionNull {
-			continue
-		}
-
-		opts = append(opts, opt)
+func compareColumn(source, target *ast.ColumnDef, opt DiffOption) bool {
+	rawOpts := [][]*ast.ColumnOption{
+		source.Options,
+		target.Options,
 	}
-	source.Options = opts
 
-	opts = []*ast.ColumnOption{}
-	for _, opt := range target.Options {
-		if opt.Tp == ast.ColumnOptionNull {
-			continue
+	restoreOpts := make([][]*ast.ColumnOption, len(rawOpts))
+	for i, opts := range rawOpts {
+		for _, columnOpt := range opts {
+			if opt.HasIgnoreColumnOption(columnOpt.Tp) {
+				continue
+			}
+
+			restoreOpts[i] = append(restoreOpts[i], columnOpt)
 		}
-
-		opts = append(opts, opt)
 	}
-	target.Options = opts
+
+	source.Options = restoreOpts[0]
+	target.Options = restoreOpts[1]
 
 	s, _ := utils.RestoreToSql(source)
 	t, _ := utils.RestoreToSql(target)
+
+	source.Options = rawOpts[0]
+	target.Options = rawOpts[1]
 
 	return s == t
 }
 
-func compareConstraint(source, target *ast.Constraint) bool {
+func compareConstraint(source, target *ast.Constraint, opt DiffOption) bool {
+	rawOpts := []*ast.IndexOption{
+		source.Option,
+		target.Option,
+	}
+
+	if opt.Has(DiffIgnoreIndexOption) {
+		source.Option = nil
+		target.Option = nil
+	}
+
 	s, _ := utils.RestoreToSql(source)
 	t, _ := utils.RestoreToSql(target)
+
+	source.Option = rawOpts[0]
+	target.Option = rawOpts[1]
 
 	return s == t
 }
